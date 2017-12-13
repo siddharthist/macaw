@@ -14,6 +14,7 @@ module Data.Macaw.CFG.DemandSet
 import           Control.Monad.State.Strict
 import           Data.Parameterized.Some
 import           Data.Parameterized.TraversableFC
+import           Data.Parameterized.Map as MapF
 import           Data.Set (Set)
 import qualified Data.Set as Set
 
@@ -117,6 +118,8 @@ addStmtDemands s =
     ExecArchStmt astmt -> do
       ctx <- DemandComp $ gets $ demandContext
       addArchStmtDemands ctx astmt
+    ArchState _a updates ->
+      MapF.traverseWithKey_ (const addValueDemands) updates
 
 ------------------------------------------------------------------------
 -- Functions for computing demanded values
@@ -131,3 +134,4 @@ stmtNeeded demandSet stmt =
     InstructionStart{} -> True
     Comment{} -> True
     ExecArchStmt{} -> True
+    ArchState{} -> True

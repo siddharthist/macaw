@@ -397,6 +397,9 @@ rewriteStmt s =
     ExecArchStmt astmt -> do
       f <- Rewriter $ gets $ rwctxArchStmt . rwContext
       f astmt
+    ArchState addr updates -> do
+      tgtUpdates <- MapF.traverseWithKey (const rewriteValue) updates
+      appendRewrittenStmt $ ArchState addr tgtUpdates
 
 -- | This runs a rewrite action, and returns the statements generated while running it
 -- along with the result of the action.
