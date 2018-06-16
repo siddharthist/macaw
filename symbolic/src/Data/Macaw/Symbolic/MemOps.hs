@@ -28,8 +28,6 @@ module Data.Macaw.Symbolic.MemOps
 import Control.Lens((^.),(&),(%~))
 import Control.Monad(guard)
 import Data.Bits(testBit)
-import Data.Map(Map)
-import qualified Data.Map as Map
 
 import Data.Parameterized(Some(..))
 
@@ -112,13 +110,17 @@ doGetGlobal ::
   (IsSymInterface sym, M.MemWidth w) =>
   CrucibleState s sym ext rtp blocks r ctx {- ^ Simulator state   -} ->
   GlobalVar Mem                            {- ^ Model of memory   -} ->
-  Map M.RegionIndex (RegValue sym (LLVMPointerType w)) {- ^ Region ptrs -} ->
+  -- Map M.RegionIndex (RegValue sym (LLVMPointerType w)) {- ^ Region ptrs -} ->
+  (RegValue sym NatType -> RegValue sym (BVType w) -> Maybe (LLVMPtr sym w)) ->
   M.MemAddr w                              {- ^ Address identifier -} ->
   IO ( RegValue sym (LLVMPointerType w)
      , CrucibleState s sym ext rtp blocks r ctx
      )
-doGetGlobal st mvar globs addr =
-  case Map.lookup (M.addrBase addr) globs of
+doGetGlobal st mvar globs addr = do
+  let sym = stateSymInterface st
+  regionNum <- natLit sym (fromIntegral (M.addrBase addr))
+  offset <- bvLit sym (M.addrWidthNatRepr (M.addrWidthRepr addr)) (M.memWordInteger (M.addrOffset addr))
+  case globs regionNum offset of
     Nothing -> fail $ unlines
                         [ "[doGetGlobal] Undefined global region:"
                         , "*** Region:  " ++ show (M.addrBase addr)
@@ -126,7 +128,6 @@ doGetGlobal st mvar globs addr =
                         ]
     Just region ->
       do mem <- getMem st mvar
-         let sym = stateSymInterface st
          let w = M.addrWidthRepr addr
          LeqProof <- pure $ addrWidthAtLeast16 w
          let ?ptrWidth = M.addrWidthNatRepr w
@@ -317,7 +318,8 @@ doReadMem ::
   IsSymInterface sym =>
   CrucibleState s sym ext rtp blocks r ctx {- ^ Simulator state   -} ->
   GlobalVar Mem ->
-  Map M.RegionIndex (RegValue sym (LLVMPointerType ptrW)) {- ^ Region ptrs -} ->
+  (RegValue sym NatType -> RegValue sym (BVType ptrW) -> Maybe (LLVMPtr sym ptrW)) {- ^ Map bitvectors to addresses -} ->
+  -- Map M.RegionIndex (RegValue sym (LLVMPointerType ptrW)) {- ^ Region ptrs -} ->
   M.AddrWidthRepr ptrW ->
   MemRepr ty ->
   RegEntry sym (LLVMPointerType ptrW) ->
@@ -356,7 +358,8 @@ doCondReadMem ::
   IsSymInterface sym =>
   CrucibleState s sym ext rtp blocks r ctx {- ^ Simulator state   -} ->
   GlobalVar Mem                            {- ^ Memory model -} ->
-  Map M.RegionIndex (RegValue sym (LLVMPointerType ptrW)) {- ^ Region ptrs -} ->
+  (RegValue sym NatType -> RegValue sym (BVType ptrW) -> Maybe (LLVMPtr sym ptrW)) {- ^ Map bitvectors to addresses -} ->
+  -- Map M.RegionIndex (RegValue sym (LLVMPointerType ptrW)) {- ^ Region ptrs -} ->
   M.AddrWidthRepr ptrW                     {- ^ Width of ptr -} ->
   MemRepr ty                               {- ^ What/how we are reading -} ->
   RegEntry sym BoolType                    {- ^ Condition -} ->
@@ -407,7 +410,8 @@ doWriteMem ::
   IsSymInterface sym =>
   CrucibleState s sym ext rtp blocks r ctx {- ^ Simulator state   -} ->
   GlobalVar Mem                            {- ^ Memory model -} ->
-  Map M.RegionIndex (RegValue sym (LLVMPointerType ptrW)) {- ^ Region ptrs -} ->
+  (RegValue sym NatType -> RegValue sym (BVType ptrW) -> Maybe (LLVMPtr sym ptrW)) {- ^ Map bitvectors to addresses -} ->
+  -- Map M.RegionIndex (RegValue sym (LLVMPointerType ptrW)) {- ^ Region ptrs -} ->
   M.AddrWidthRepr ptrW                     {- ^ Width of ptr -} ->
   MemRepr ty                               {- ^ What/how we are writing -} ->
   RegEntry sym (LLVMPointerType ptrW)      {- ^ Pointer -} ->
@@ -618,21 +622,18 @@ tryGlobPtr ::
   IsSymInterface sym =>
   sym ->
   RegValue sym Mem ->
-  Map M.RegionIndex (RegValue sym (LLVMPointerType w)) {- ^ Region ptrs -} ->
+  (RegValue sym NatType -> RegValue sym (BVType w) -> Maybe (LLVMPtr sym w)) ->
   M.AddrWidthRepr w ->
   LLVMPtr sym w ->
   IO (LLVMPtr sym w)
-tryGlobPtr sym mem globs w val
+tryGlobPtr sym mem mapBVAddress w val
   | Just 0 <- asNat (ptrBase val)
-  , Just r <- Map.lookup literalAddrRegion globs
+  , Just r <- mapBVAddress (ptrBase val) (asBits val)
   , LeqProof <- addrWidthIsPos w
   , LeqProof <- addrWidthAtLeast16 w =
-     let ?ptrWidth = M.addrWidthNatRepr w
+      let ?ptrWidth = M.addrWidthNatRepr w
       in doPtrAddOffset sym mem r (asBits val)
   | otherwise = return val
-  where
-  literalAddrRegion = 0
-
 
 isAlignMask :: (IsSymInterface sym) => LLVMPtr sym w -> Maybe Integer
 isAlignMask v =

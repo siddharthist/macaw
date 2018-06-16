@@ -499,11 +499,28 @@ macawExtensions f mvar globs lookupH =
                   , C.extensionExec = execMacawStmtExtension f mvar globs lookupH
                   }
 
+{-
+
+Goals:
+
+1. Translate bitvectors (block ID 0) into LLVMPointers with unique block IDs through tryGlobPtr
+2. Translate MemAddrs with non-zero region IDs into region+offsets
+
+Questions:
+
+- Do we want to support symbolic pointers?  What could possibly be returned if
+  the region or address was symbolic?  We could do something if the offset
+  within a region was symbolic, but the region index was concrete.  In use case
+  (2), the region index and offset are always concrete.  The base in (1) is
+  always concrete, but the offset could be symbolic.  To support (2), we need
+  the region id, which the current function-based API doesn't support.
+
+-}
 
 -- | Maps region indexes to the pointers representing them.
-type GlobalMap sym arch = Map M.RegionIndex
-                              (MM.LLVMPtr sym (M.ArchAddrWidth arch))
-
+-- type GlobalMap sym arch = Map M.RegionIndex
+--                               (MM.LLVMPtr sym (M.ArchAddrWidth arch))
+type GlobalMap sym arch = C.RegValue sym C.NatType -> C.RegValue sym (C.BVType (M.ArchAddrWidth arch)) -> Maybe (MM.LLVMPtr sym (M.ArchAddrWidth arch))
 
 
 -- | Run the simulator over a contiguous set of code.
