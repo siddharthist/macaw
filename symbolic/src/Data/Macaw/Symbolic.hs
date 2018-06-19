@@ -404,7 +404,7 @@ execMacawStmtExtension ::
   IsSymInterface sym =>
   MacawArchEvalFn sym arch {- ^ Function for executing -} ->
   C.GlobalVar MM.Mem ->
-  GlobalMap sym arch ->
+  GlobalMap sym (M.ArchAddrWidth arch) ->
   LookupFunctionHandle sym arch ->
   EvalStmtFunc (MacawStmtExtension arch) (MacawSimulatorState sym) sym (MacawExt arch)
 execMacawStmtExtension archStmtFn mvar globs lookupH s0 st =
@@ -491,7 +491,7 @@ macawExtensions ::
   IsSymInterface sym =>
   MacawArchEvalFn sym arch ->
   C.GlobalVar MM.Mem ->
-  GlobalMap sym arch ->
+  GlobalMap sym (M.ArchAddrWidth arch) ->
   LookupFunctionHandle sym arch ->
   C.ExtensionImpl (MacawSimulatorState sym) sym (MacawExt arch)
 macawExtensions f mvar globs lookupH =
@@ -517,12 +517,6 @@ Questions:
 
 -}
 
--- | Maps region indexes to the pointers representing them.
--- type GlobalMap sym arch = Map M.RegionIndex
---                               (MM.LLVMPtr sym (M.ArchAddrWidth arch))
-type GlobalMap sym arch = C.RegValue sym C.NatType -> C.RegValue sym (C.BVType (M.ArchAddrWidth arch)) -> Maybe (MM.LLVMPtr sym (M.ArchAddrWidth arch))
-
-
 -- | Run the simulator over a contiguous set of code.
 runCodeBlock :: forall sym arch blocks
            .  IsSymInterface sym
@@ -531,7 +525,7 @@ runCodeBlock :: forall sym arch blocks
               -- ^ Translation functions
            -> MacawArchEvalFn sym arch
            -> C.HandleAllocator RealWorld
-           -> (MM.MemImpl sym, GlobalMap sym arch)
+           -> (MM.MemImpl sym, GlobalMap sym (M.ArchAddrWidth arch))
            -> LookupFunctionHandle sym arch
            -> C.CFG (MacawExt arch) blocks (EmptyCtx ::> ArchRegStruct arch) (ArchRegStruct arch)
            -> Ctx.Assignment (C.RegValue' sym) (MacawCrucibleRegTypes arch)
