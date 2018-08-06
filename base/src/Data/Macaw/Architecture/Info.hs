@@ -45,15 +45,15 @@ type DisassembleFn arch
    .  Memory (ArchAddrWidth arch)
    -> NonceGenerator (ST s) ids
    -> ArchSegmentOff arch
-      -- ^ The offset to start reading from.
-   -> ArchAddrWord arch
-      -- ^ Maximum offset for this to read from.
+      -- ^ The address to start reading from.
+   -> Int
+      -- ^ Maximum number of bytes to read from.
    -> AbsBlockState (ArchReg arch)
       -- ^ Abstract state associated with address that we are disassembling
       -- from.
       --
       -- This is used for things like the height of the x87 stack.
-   -> ST s ([Block arch ids], MemWord (ArchAddrWidth arch), Maybe String)
+   -> ST s ([Block arch ids], Int, Maybe String)
 
 -- | This records architecture specific functions for analysis.
 data ArchitectureInfo arch
@@ -65,8 +65,6 @@ data ArchitectureInfo arch
        -- ^ Architecture address width.
      , archEndianness :: !Endianness
        -- ^ The byte order values are stored in.
-     , jumpTableEntrySize :: !(MemWord (ArchAddrWidth arch))
-       -- ^ The size of each entry in a jump table.
      , disassembleFn :: !(DisassembleFn arch)
        -- ^ Function for disasembling a block.
      , mkInitialAbsState :: !(Memory (RegAddrWidth (ArchReg arch))

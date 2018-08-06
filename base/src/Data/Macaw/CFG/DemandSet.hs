@@ -93,8 +93,9 @@ addValueDemands v = do
   case v of
     BoolValue{} -> pure ()
     BVValue{} -> pure ()
-    RelocatableValue{} -> pure ()
+    ThisFunctionAddr{} -> pure ()
     SymbolValue{} -> pure ()
+    RelocatableValue{} -> pure ()
     AssignedValue a -> addAssignmentDemands a
     Initial{} ->  pure ()
 

@@ -1206,6 +1206,7 @@ transferValue c v = do
     BVValue w i
       | 0 <= i && i <= maxUnsigned w -> abstractSingleton (absMem c) w i
       | otherwise -> error $ "transferValue given illegal value " ++ show (pretty v)
+    ThisFunctionAddr _ -> TopV
     -- TODO: Ensure a relocatable value is in code.
     RelocatableValue _w i
       | Just addr <- asSegmentOff (absMem c) i

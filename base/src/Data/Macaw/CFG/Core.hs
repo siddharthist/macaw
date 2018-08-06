@@ -33,11 +33,9 @@ module Data.Macaw.CFG.Core
   , valueAsApp
   , valueAsArchFn
   , valueAsRhs
+  , SymbolResolutionInfo(..)
   , valueAsMemAddr
   , valueAsSegmentOff
-  , valueAsStaticMultiplication
-  , asBaseOffset
-  , asInt64Constant
   , IPAlignment(..)
   , mkLit
   , bvValue
@@ -83,7 +81,7 @@ import           Control.Lens
 import           Control.Monad.Identity
 import           Control.Monad.State.Strict
 import           Data.Bits
-import           Data.Int (Int64)
+import           Data.Map (Map)
 import           Data.Maybe (isNothing, catMaybes)
 import           Data.Parameterized.Classes
 import           Data.Parameterized.Map (MapF)
@@ -99,8 +97,8 @@ import           Data.Text (Text)
 import qualified Data.Text as Text
 import           GHC.TypeLits
 import           Numeric (showHex)
-import           Text.PrettyPrint.ANSI.Leijen hiding ((<$>), (<>))
 import qualified Text.PrettyPrint.ANSI.Leijen as PP
+import           Text.PrettyPrint.ANSI.Leijen hiding ((<$>), (<>))
 
 import           Data.Macaw.CFG.App
 import           Data.Macaw.CFG.AssignRhs
@@ -184,16 +182,34 @@ data Value arch ids tp where
   BVValue :: (1 <= n) => !(NatRepr n) -> !Integer -> Value arch ids (BVType n)
   -- | A constant Boolean
   BoolValue :: !Bool -> Value arch ids BoolType
-  -- | A memory address
-  RelocatableValue :: !(AddrWidthRepr (ArchAddrWidth arch))
-                   -> !(ArchMemAddr arch)
+
+  -- | `ThisFunctionAddr repr` denotes the address of the current
+  -- function we are translating.  This specialized representation is
+  -- used to facilitate downstream analysis which may want to, for
+  -- example, allow code within a function to be replaced or
+  -- relocated.
+  --
+  -- The initial PC at function start is set to this, and we may
+  -- create ones from various operations such as the PC values in jump
+  -- tables.  When analyzing code, care needs to be taken between
+  -- substituting `ThisFunctionAddr` with the literal address or
+  -- symbols (and vice versa) because they affect underlying
+  -- assumptions about how code's precise representation in memory.
+  ThisFunctionAddr :: !(AddrWidthRepr (ArchAddrWidth arch))
                    -> Value arch ids (BVType (ArchAddrWidth arch))
+
   -- | This denotes the address of a symbol identifier in the binary.
   --
   -- This appears when dealing with relocations.
   SymbolValue :: !(AddrWidthRepr (ArchAddrWidth arch))
               -> !SymbolIdentifier
               -> Value arch ids (BVType (ArchAddrWidth arch))
+
+  -- | A memory address
+  RelocatableValue :: !(AddrWidthRepr (ArchAddrWidth arch))
+                   -> !(ArchMemAddr arch)
+                   -> Value arch ids (BVType (ArchAddrWidth arch))
+
   -- | Value from an assignment statement.
   AssignedValue :: !(Assignment arch ids tp)
                 -> Value arch ids tp
@@ -223,8 +239,9 @@ instance ( HasRepr (ArchReg arch) TypeRepr
 
   typeRepr (BoolValue _) = BoolTypeRepr
   typeRepr (BVValue w _) = BVTypeRepr w
-  typeRepr (RelocatableValue w _) = addrWidthTypeRepr w
+  typeRepr (ThisFunctionAddr w)   = addrWidthTypeRepr w
   typeRepr (SymbolValue w _)      = addrWidthTypeRepr w
+  typeRepr (RelocatableValue w _) = addrWidthTypeRepr w
   typeRepr (AssignedValue a) = typeRepr (assignRhs a)
   typeRepr (Initial r) = typeRepr r
 
@@ -246,15 +263,19 @@ instance OrdF (ArchReg arch)
   compareF BVValue{} _ = LTF
   compareF _ BVValue{} = GTF
 
-  compareF (RelocatableValue _ x) (RelocatableValue _ y) =
-    fromOrdering (compare x y)
-  compareF RelocatableValue{} _ = LTF
-  compareF _ RelocatableValue{} = GTF
+  compareF (ThisFunctionAddr _) (ThisFunctionAddr _) = EQF
+  compareF ThisFunctionAddr{} _ = LTF
+  compareF _ ThisFunctionAddr{} = GTF
 
   compareF (SymbolValue _ x) (SymbolValue _ y) =
     fromOrdering (compare x y)
   compareF SymbolValue{} _ = LTF
   compareF _ SymbolValue{} = GTF
+
+  compareF (RelocatableValue _ x) (RelocatableValue _ y) =
+    fromOrdering (compare x y)
+  compareF RelocatableValue{} _ = LTF
+  compareF _ RelocatableValue{} = GTF
 
   compareF (AssignedValue x) (AssignedValue y) =
     compareF (assignId x) (assignId y)
@@ -262,10 +283,7 @@ instance OrdF (ArchReg arch)
   compareF _ AssignedValue{} = GTF
 
   compareF (Initial r) (Initial r') =
-    case compareF r r' of
-      LTF -> LTF
-      EQF -> EQF
-      GTF -> GTF
+    lexCompareF r r' EQF
 
 instance OrdF (ArchReg arch)
       => TestEquality (Value arch ids) where
@@ -308,31 +326,33 @@ valueAsArchFn :: Value arch ids tp -> Maybe (ArchFn arch (Value arch ids) tp)
 valueAsArchFn (AssignedValue (Assignment _ (EvalArchFn a _))) = Just a
 valueAsArchFn _ = Nothing
 
--- | This returns a segmented address if the value can be interpreted as a literal memory
--- address, and returns nothing otherwise.
+
+-- | Information used to map symbols to their associated addresses.
+newtype SymbolResolutionInfo w = SymbolResolutionInfo
+  { sectionAddrMap :: Map SectionIndex (MemSegmentOff w)
+    -- ^ Map from loaded section indices to their associated address.
+  }
+
+-- | This returns a segmented address if the value can be interpreted
+-- as a literal memory address, and returns nothing otherwise.
+--
+-- Note. This function uses fairly specific pattern matching, and so
+-- may not recognize all addresses.
 valueAsMemAddr :: MemWidth (ArchAddrWidth arch)
                => BVValue arch ids (ArchAddrWidth arch)
                -> Maybe (ArchMemAddr arch)
 valueAsMemAddr (BVValue _ val)      = Just $ absoluteAddr (fromInteger val)
+valueAsMemAddr (ThisFunctionAddr _) = Nothing
+-- TODO: Support symbol resolution as well.
 valueAsMemAddr (RelocatableValue _ i) = Just i
+valueAsMemAddr v
+  | Just (BVAdd _ base (BVValue _  off)) <- valueAsApp v = do
+      baseAddr <- valueAsMemAddr base
+      pure $ baseAddr & incAddr (toInteger off)
+  | Just (BVAdd _ (BVValue _  off) base) <- valueAsApp v = do
+      baseAddr <- valueAsMemAddr base
+      pure $ baseAddr & incAddr (toInteger off)
 valueAsMemAddr _ = Nothing
-
-valueAsStaticMultiplication ::
-  BVValue arch ids w ->
-  Maybe (Integer, BVValue arch ids w)
-valueAsStaticMultiplication v
-  | Just (BVMul _ (BVValue _ mul) v') <- valueAsApp v = Just (mul, v')
-  | Just (BVMul _ v' (BVValue _ mul)) <- valueAsApp v = Just (mul, v')
-  | Just (BVShl _ v' (BVValue _ sh))  <- valueAsApp v = Just (2^sh, v')
-  -- the PowerPC way to shift left is a bit obtuse...
-  | Just (BVAnd w v' (BVValue _ c)) <- valueAsApp v
-  , Just (BVOr _ l r) <- valueAsApp v'
-  , Just (BVShl _ l' (BVValue _ shl)) <- valueAsApp l
-  , Just (BVShr _ _ (BVValue _ shr)) <- valueAsApp r
-  , c == complement (2^shl-1) `mod` bit (fromInteger (natValue w))
-  , shr >= natValue w - shl
-  = Just (2^shl, l')
-  | otherwise = Nothing
 
 -- | Returns a segment offset associated with the value if one can be defined.
 valueAsSegmentOff :: Memory (ArchAddrWidth arch)
@@ -341,15 +361,6 @@ valueAsSegmentOff :: Memory (ArchAddrWidth arch)
 valueAsSegmentOff mem v = do
   a <- addrWidthClass (memAddrWidth mem) (valueAsMemAddr v)
   asSegmentOff mem a
-
-asInt64Constant :: Value arch ids (BVType 64) -> Maybe Int64
-asInt64Constant (BVValue _ o) = Just (fromInteger o)
-asInt64Constant _ = Nothing
-
-asBaseOffset :: Value arch ids (BVType w) -> (Value arch ids (BVType w), Integer)
-asBaseOffset x
-  | Just (BVAdd _ x_base (BVValue _  x_off)) <- valueAsApp x = (x_base, x_off)
-  | otherwise = (x,0)
 
 class IPAlignment arch where
   -- | Take an aligned value and strip away the bits of the semantics that
@@ -480,7 +491,6 @@ asStackAddrOffset addr
   | otherwise =
     Nothing
 
-
 ------------------------------------------------------------------------
 -- Pretty print Assign, AssignRhs, Value operations
 
@@ -490,7 +500,10 @@ ppLit w i
   | otherwise = error "ppLit given negative value"
 
 -- | Pretty print a value.
-ppValue :: RegisterInfo (ArchReg arch) => Prec -> Value arch ids tp -> Doc
+ppValue :: RegisterInfo (ArchReg arch)
+        => Prec
+        -> Value arch ids tp
+        -> Doc
 ppValue _ (BoolValue b)     = text $ if b then "true" else "false"
 ppValue p (BVValue w i)
   | i >= 0 = parenIf (p > colonPrec) $ ppLit w i
@@ -498,8 +511,9 @@ ppValue p (BVValue w i)
     -- TODO: We may want to report an error here.
     parenIf (p > colonPrec) $
     text (show i) <+> text "::" <+> brackets (text (show w))
-ppValue p (RelocatableValue _ a) = parenIf (p > plusPrec) $ text (show a)
+ppValue _ (ThisFunctionAddr _) = text "thisFunction"
 ppValue _ (SymbolValue _ a) = text (show a)
+ppValue p (RelocatableValue _ a) = parenIf (p > plusPrec) $ text (show a)
 ppValue _ (AssignedValue a) = ppAssignId (assignId a)
 ppValue _ (Initial r)       = text (showF r) PP.<> text "_0"
 
@@ -548,7 +562,7 @@ ppAssignRhs :: (Applicative m, ArchConstraints arch)
             -> AssignRhs arch f tp
             -> m Doc
 ppAssignRhs pp (EvalApp a) = ppAppA pp a
-ppAssignRhs _  (SetUndefined tp) = pure $ text "undef ::" <+> brackets (text (show tp))
+ppAssignRhs _  (SetUndefined tp) = pure $ text "undef ::" <+> text (show tp)
 ppAssignRhs pp (ReadMem a repr) =
   (\d -> text "read_mem" <+> d <+> PP.parens (pretty repr)) <$> pp a
 ppAssignRhs pp (CondReadMem repr c a d) = f <$> pp c <*> pp a <*> pp d

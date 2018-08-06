@@ -211,8 +211,8 @@ data GenState st_s ids = GenState
          -- ^ 'NonceGenerator' for generating 'AssignId's
        , _blockState   :: !(PreBlock ids)
          -- ^ Block that we are processing.
-       , genAddr      :: !(MemSegmentOff 64)
-         -- ^ Address of instruction we are translating
+       , genInitPCAddr  :: !(MemSegmentOff 64)
+         -- ^ This is the address of the instruction we are translating.
        , genMemory    :: !(Memory 64)
          -- ^ The memory
        , _genRegUpdates :: !(MapF.MapF X86Reg (Value X86_64 ids))

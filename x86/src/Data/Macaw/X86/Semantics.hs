@@ -15,7 +15,8 @@ This module provides definitions for x86 instructions.
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE NondecreasingIndentation #-}
 module Data.Macaw.X86.Semantics
-  ( execInstruction
+  ( Data.Macaw.X86.InstructionDef.InstructionSemantics(..)
+  , semanticsMap
   ) where
 
 import           Control.Lens ((^.))
@@ -2860,21 +2861,9 @@ mapNoDupFromList = foldlM ins M.empty
             Just _ -> Left k
             Nothing -> Right (M.insert k v m)
 
--- | A map from instruction mnemonics to their semantic definitions
+-- | This is a map from instruction mnemonics to their semantic definitions
 semanticsMap :: Map String InstructionSemantics
 semanticsMap =
   case mapNoDupFromList all_instructions of
     Right m -> m
     Left k -> error $ "semanticsMap contains duplicate entries for " ++ show k ++ "."
-
--- | Execute an instruction if definined in the map or return nothing.
-execInstruction :: Expr ids (BVType 64)
-                   -- ^ Next ip address
-                -> F.InstructionInstance
-                -> Maybe (X86Generator st ids ())
-execInstruction next ii =
-  case M.lookup (F.iiOp ii) semanticsMap of
-    Just (InstructionSemantics f) -> Just $ do
-      rip .= next
-      f ii
-    Nothing -> Nothing

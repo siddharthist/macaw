@@ -46,6 +46,7 @@ refineProcState (BoolValue _) _av regs          = regs -- Skip refinement for li
 refineProcState (BVValue _n _val) _av regs      = regs -- Skip refinement for literal values
 refineProcState (RelocatableValue _ _) _av regs = regs -- Skip refinement for relocatable values
 refineProcState (SymbolValue _ _)      _av regs = regs -- Skip refinement for this case.
+refineProcState (ThisFunctionAddr _)   _av regs = regs -- Skip refinement for this case.
 refineProcState (Initial r) av regs =
   regs & (absInitialRegs . boundValue r) %~ flip meet av
 refineProcState (AssignedValue (Assignment a_id rhs)) av regs

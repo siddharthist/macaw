@@ -361,15 +361,20 @@ truncateBVValue n (SomeBV v)
   | otherwise =
     fail $ "Widths isn't >=: " ++ show (typeWidth v) ++ " and " ++ show n
 
-resolveJumpOffset :: GenState st_s ids -> F.JumpOffset -> BVExpr ids 64
+-- | Resolve amount to add to PC for jump.
+--
+-- The first argument should resolve to the starting address of the
+-- instruction we are translating.
+resolveJumpOffset :: BVExpr ids 64 -> F.JumpOffset -> BVExpr ids 64
 resolveJumpOffset _ (F.FixedOffset off) = bvLit n64 (toInteger off)
-resolveJumpOffset s (F.RelativeOffset symId insOff off) =
-    symVal .+ bvLit n64 (toInteger off) .- ValueExpr (RelocatableValue arepr relocAddr)
-  where arepr = memAddrWidth (genMemory s)
-        symVal = ValueExpr (SymbolValue arepr symId)
-        addrOff = genAddr s
-        relocAddr = relativeAddr (msegSegment addrOff) (msegOffset addrOff + fromIntegral insOff)
-
+-- For a relative offset, the value stored is equal to symbol "address + offset - offset of
+-- where the relative offset is stored.  We can compute the later by taking the starting
+-- pc and adding the number of bytes in the instruction where the relative offset was read
+-- from.  By moving this around to precompute constants this becomes, symbol address
+-- minus initial PC plus relative offset minus relation byte offset within instruction.
+resolveJumpOffset initPC (F.RelativeOffset relocAddrOff symId off) =
+    symbolAddress .- initPC .+ bvLit n64 (toInteger off - toInteger relocAddrOff)
+  where symbolAddress = ValueExpr (SymbolValue Addr64 symId)
 
 -- | Return the target of a call or jump instruction.
 getCallTarget :: F.Value
@@ -380,7 +385,8 @@ getCallTarget v =
     F.QWordReg r -> get (reg64Loc r)
     F.JumpOffset _ joff -> do
       s <- getState
-      (.+ resolveJumpOffset s joff) <$> get rip
+      let initPC = ValueExpr (RelocatableValue Addr64 (relativeSegmentAddr (genInitPCAddr s)))
+      (.+ resolveJumpOffset initPC joff) <$> get rip
     _ -> fail "Unexpected argument"
 
 -- | Return the target of a call or jump instruction.
@@ -389,7 +395,8 @@ doJump cond v =
   case v of
     F.JumpOffset _ joff -> do
       s <- getState
-      modify rip $ \ipVal -> mux cond (ipVal .+ resolveJumpOffset s joff) ipVal
+      let initPC = ValueExpr (RelocatableValue Addr64 (relativeSegmentAddr (genInitPCAddr s)))
+      modify rip $ \ipVal -> mux cond (ipVal .+ resolveJumpOffset initPC joff) ipVal
 
     F.QWordReg r -> do
       ipVal <- get (reg64Loc r)

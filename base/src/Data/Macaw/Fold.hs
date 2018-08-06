@@ -31,24 +31,26 @@ import           Data.Parameterized.TraversableFC
 import           Data.Macaw.CFG
 
 data ValueFold arch ids r = ValueFold
-  { foldBoolValue  :: !(Bool -> r)
-  , foldBVValue    :: !(forall n . NatRepr n -> Integer -> r)
-  , foldAddr       :: !(ArchMemAddr arch -> r)
-  , foldIdentifier :: !(SymbolIdentifier -> r)
-  , foldInput      :: !(forall utp . ArchReg arch utp -> r)
-  , foldAssign     :: !(forall utp . AssignId ids utp -> r -> r)
+  { foldBoolValue     :: !(Bool -> r)
+  , foldBVValue       :: !(forall n . NatRepr n -> Integer -> r)
+  , foldThisFunctionAddr :: r
+  , foldIdentifier    :: !(SymbolIdentifier -> r)
+  , foldAddr          :: !(ArchMemAddr arch -> r)
+  , foldInput         :: !(forall utp . ArchReg arch utp -> r)
+  , foldAssign        :: !(forall utp . AssignId ids utp -> r -> r)
   }
 
 -- | Empty value fold returns mempty for each non-recursive fold, and the
 -- identify of @foldAssign@
 emptyValueFold :: Monoid r => ValueFold arch ids r
 emptyValueFold =
-  ValueFold { foldBoolValue  = \_ -> mempty
-            , foldBVValue    = \_ _ -> mempty
-            , foldAddr       = \_ -> mempty
-            , foldIdentifier = \_ -> mempty
-            , foldInput      = \_ -> mempty
-            , foldAssign     = \_ r -> r
+  ValueFold { foldBoolValue     = \_ -> mempty
+            , foldBVValue       = \_ _ -> mempty
+            , foldThisFunctionAddr = mempty
+            , foldIdentifier    = \_ -> mempty
+            , foldAddr          = \_ -> mempty
+            , foldInput         = \_ -> mempty
+            , foldAssign        = \_ r -> r
             }
 
 -- | This folds over elements of a values in a  values.
@@ -71,10 +73,12 @@ foldValueCached fns = go
           pure $! foldBoolValue fns b
         BVValue sz i ->
           pure $! foldBVValue fns sz i
-        RelocatableValue _ a ->
-          pure $! foldAddr fns a
+        ThisFunctionAddr _ ->
+          pure $! foldThisFunctionAddr fns
         SymbolValue _ a ->
           pure $! foldIdentifier fns a
+        RelocatableValue _ a ->
+          pure $! foldAddr fns a
         Initial r    ->
           pure $! foldInput fns r
         AssignedValue (Assignment a_id rhs) -> do

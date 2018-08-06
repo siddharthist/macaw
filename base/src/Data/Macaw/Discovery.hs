@@ -57,6 +57,7 @@ import           Control.Applicative
 import           Control.Lens
 import           Control.Monad.ST
 import           Control.Monad.State.Strict
+import           Data.Bits
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BSC
 import           Data.Foldable
@@ -147,8 +148,12 @@ refineProcStateBounds :: ( OrdF (ArchReg arch)
                       -> AbsProcessorState (ArchReg arch) ids
 refineProcStateBounds v isTrue ps =
   case indexBounds (Jmp.assertPred v isTrue) ps of
-    Left{}    -> ps
-    Right ps' -> ps'
+    Just ps' -> ps'
+    -- Note: In this case, we have just discovered that the given proc
+    -- state is infeasible, we should eventually use this to refine
+    -- the program, or at least issue a warning so that we have some
+    -- way of knowing that this occurs in practice.
+    Nothing -> ps
 
 ------------------------------------------------------------------------
 -- Eliminate dead code in blocks
@@ -525,6 +530,25 @@ valueAsMemOffset mem aps v
 
   | otherwise = Nothing
 
+-- | `valueAsStaticMultiplication v` attempts to recognize a value `v`
+-- as having the form `c*x` where `c` is a constant.
+valueAsStaticMultiplication
+  :: BVValue arch ids w
+  -> (Integer, BVValue arch ids w)
+valueAsStaticMultiplication v
+  | Just (BVMul _ (BVValue _ mul) v') <- valueAsApp v = (mul, v')
+  | Just (BVMul _ v' (BVValue _ mul)) <- valueAsApp v = (mul, v')
+  | Just (BVShl _ v' (BVValue _ sh))  <- valueAsApp v = (2^sh, v')
+  -- the PowerPC way to shift left is a bit obtuse...
+  | Just (BVAnd w v' (BVValue _ c)) <- valueAsApp v
+  , Just (BVOr _ l r) <- valueAsApp v'
+  , Just (BVShl _ l' (BVValue _ shl)) <- valueAsApp l
+  , Just (BVShr _ _ (BVValue _ shr)) <- valueAsApp r
+  , c == complement (2^shl-1) `mod` bit (fromInteger (natValue w))
+  , shr >= natValue w - shl
+  = (2^shl, l')
+  | otherwise = (1,v)
+
 -- | See if the value can be interpreted as a read of memory
 matchBoundedMemArray
   :: (MemWidth (ArchAddrWidth arch), RegisterInfo (ArchReg arch))
@@ -535,7 +559,7 @@ matchBoundedMemArray
 matchBoundedMemArray mem aps val
   | Just (ReadMem addr tp) <- valueAsRhs val
   , Just (base, offset) <- valueAsMemOffset mem aps addr
-  , Just (stride, ixVal) <- valueAsStaticMultiplication offset
+  , (stride, ixVal) <- valueAsStaticMultiplication offset
     -- Check stride covers at least number of bytes read.
   , memReprBytes tp <= stride
     -- Resolve a static upper bound to array.
@@ -791,36 +815,45 @@ addrMemRepr arch_info =
     Addr32 -> BVMemRepr n4 (archEndianness arch_info)
     Addr64 -> BVMemRepr n8 (archEndianness arch_info)
 
+addNewFunctionAddrs :: [ArchSegmentOff arch]
+                    -> State (ParseState arch ids) ()
+addNewFunctionAddrs addrs =
+  newFunctionAddrs %= (++addrs)
+
+-- | This records all the concrete values that the IP may point to as candidate
+-- function entry points
 identifyCallTargets :: forall arch ids
                     .  (RegisterInfo (ArchReg arch))
                     => Memory (ArchAddrWidth arch)
                     -> AbsBlockState (ArchReg arch)
                        -- ^ Abstract processor state just before call.
                     -> RegState (ArchReg arch) (Value arch ids)
-                    -> [ArchSegmentOff arch]
+                    -> State (ParseState arch ids) ()
 identifyCallTargets mem absState s = do
   -- Code pointers from abstract domains.
   let def = identifyConcreteAddresses mem (absState^.absRegState^.curIP)
   case s^.boundValue ip_reg of
-    BVValue _ x ->
-      maybeToList $ resolveAbsoluteAddr mem (fromInteger x)
+    BVValue _ x -> do
+      addNewFunctionAddrs $
+        maybeToList $ resolveAbsoluteAddr mem (fromInteger x)
     RelocatableValue _ a ->
-      maybeToList $ asSegmentOff mem a
-    SymbolValue{} -> def
-    AssignedValue a ->
+      addNewFunctionAddrs $
+        maybeToList $ asSegmentOff mem a
+    SymbolValue{} ->
+      addNewFunctionAddrs def
+    ThisFunctionAddr{} -> do
+      pure ()
+    AssignedValue a -> do
       case assignRhs a of
         -- See if we can get a value out of a concrete memory read.
         ReadMem addr (BVMemRepr _ end)
           | Just laddr <- valueAsMemAddr addr
           , Right val <- readSegmentOff mem end laddr ->
-            val : def
-        _ -> def
-    Initial _ -> def
-
-addNewFunctionAddrs :: [ArchSegmentOff arch]
-                    -> State (ParseState arch ids) ()
-addNewFunctionAddrs addrs =
-  newFunctionAddrs %= (++addrs)
+            addNewFunctionAddrs [val]
+        _ -> pure ()
+      addNewFunctionAddrs def
+    Initial _ ->
+      addNewFunctionAddrs def
 
 -- | This parses a block that ended with a fetch and execute instruction.
 parseFetchAndExecute :: forall arch ids
@@ -876,8 +909,7 @@ parseFetchAndExecute ctx idx stmts regs s = do
         -- Merge caller return information
         intraJumpTargets %= ((ret, postCallAbsState ainfo abst ret):)
         -- Use the abstract domain to look for new code pointers for the current IP.
-        addNewFunctionAddrs $
-          identifyCallTargets mem abst s
+        identifyCallTargets mem abst s
         -- Use the call-specific code to look for new IPs.
 
         let r = StatementList { stmtsIdent = idx
@@ -1142,10 +1174,11 @@ transfer addr = do
   -- Get maximum number of bytes to disassemble
   let seg = msegSegment addr
       off = msegOffset addr
-  let maxSize =
+  let maxSize :: Int
+      maxSize =
         case Map.lookupGT addr prev_block_map of
           Just (next,_) | Just o <- diffSegmentOff next addr -> fromInteger o
-          _ -> segmentSize seg - off
+          _ -> fromIntegral (segmentSize seg - off)
   let ab = foundAbstractState finfo
   (bs0, sz, maybeError) <- liftST $ disassembleFn ainfo mem nonceGen addr maxSize ab
 
@@ -1170,7 +1203,7 @@ transfer addr = do
           , stmtsAbsState = initAbsProcessorState mem (foundAbstractState finfo)
           }
     let pb = ParsedBlock { pblockAddr = addr
-                         , blockSize = sz
+                         , blockSize = fromIntegral sz
                          , blockReason = foundReason finfo
                          , blockAbstractState = foundAbstractState finfo
                          , blockStatementList = stmts
@@ -1183,7 +1216,7 @@ transfer addr = do
     let bs = bs1 -- eliminateDeadStmts ainfo bs1
     -- Call transfer blocks to calculate parsedblocks
     let blockMap = Map.fromList [ (blockLabel b, b) | b <- bs ]
-    transferBlocks addr finfo sz blockMap
+    transferBlocks addr finfo (fromIntegral sz) blockMap
 
 ------------------------------------------------------------------------
 -- Main loop

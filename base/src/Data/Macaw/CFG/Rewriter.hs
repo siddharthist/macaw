@@ -592,6 +592,7 @@ rewriteValue v =
     BoolValue b -> pure (BoolValue b)
     BVValue w i -> pure (BVValue w i)
     RelocatableValue w a -> pure (RelocatableValue w a)
+    ThisFunctionAddr w -> pure (ThisFunctionAddr w)
     SymbolValue repr sym -> do
       ctx <- Rewriter $ gets rwContext
       rwctxConstraints ctx $ do
