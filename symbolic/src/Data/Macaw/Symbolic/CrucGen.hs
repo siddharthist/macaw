@@ -102,6 +102,7 @@ import           What4.ProgramLoc as C
 import qualified What4.Symbol as C
 
 import qualified Lang.Crucible.CFG.Expr as C
+import qualified Lang.Crucible.CFG.Extension.Safety as S
 import qualified Lang.Crucible.CFG.Reg as CR
 import qualified Lang.Crucible.Types as C
 
@@ -520,6 +521,11 @@ data MacawExt (arch :: *)
 
 type instance C.ExprExtension (MacawExt arch) = MacawExprExtension arch
 type instance C.StmtExtension (MacawExt arch) = MacawStmtExtension arch
+type instance S.AssertionClassifier (MacawExt arch) = S.NoAssertionClassifier
+
+instance S.HasStructuredAssertions (MacawExt arch) where
+  explain _proxyExt = \case
+  toPredicate _proxyExt _sym = \case
 
 instance MacawArchConstraints arch
       => C.IsSyntaxExtension (MacawExt arch)

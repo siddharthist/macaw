@@ -62,14 +62,12 @@ import           Lang.Crucible.LLVM.MemModel
           ( Mem, MemImpl, LLVMPointerType, LLVMPtr, isValidPointer, memEndian
           , LLVMVal(LLVMValInt)
           , loadRaw
-          , loadRawWithCondition
           , storeRaw
           , llvmPointerView, muxLLVMPtr, llvmPointer_bv, ptrAdd, ptrSub, ptrEq
           , pattern LLVMPointer
           , mkNullPointer
           , bitvectorType
           , ppPtr
-          , ptrMessage
           )
 import           Lang.Crucible.LLVM.DataLayout (EndianForm(..), noAlignment)
 import           Lang.Crucible.LLVM.Bytes (toBytes)
@@ -474,7 +472,7 @@ doCondReadMem st mvar globs w (BVMemRepr bytes endian) cond0 ptr0 def0 =
      LeqProof <- pure $ addrWidthAtLeast16 w
      let alignment = noAlignment -- default to byte alignment (FIXME)
      val <- let ?ptrWidth = M.addrWidthNatRepr w
-             in loadRawWithCondition sym mem ptr ty alignment
+            in loadRaw sym mem ptr ty alignment
 
      let useDefault msg =
            do notC <- notPred sym cond
@@ -482,18 +480,11 @@ doCondReadMem st mvar globs w (BVMemRepr bytes endian) cond0 ptr0 def0 =
                  (AssertFailureSimError ("[doCondReadMem] " ++ msg))
               return def
 
-     a <- case val of
-            Right (v, isAlloc, isAlign, isValid) | Just a <- valToBits bitw v ->
-              do let ?ptrWidth = M.addrWidthNatRepr w
-                 do grd <- impliesPred sym cond isAlloc
-                    assert sym grd (AssertFailureSimError (ptrMessage "Unallocated memory read" ptr ty))
-                 do grd <- impliesPred sym cond isAlign
-                    assert sym grd (AssertFailureSimError (ptrMessage "Unaligned memory read" ptr ty))
-                 do grd <- impliesPred sym cond isValid
-                    assert sym grd (AssertFailureSimError (ptrMessage "Invalid memory read" ptr ty))
-                 muxLLVMPtr sym cond a def
-            Right _ -> useDefault "Unexpected value read from memory."
-            Left err -> useDefault err
+     a <- case valToBits bitw val of
+            Just a ->
+              let ?ptrWidth = M.addrWidthNatRepr w
+              in muxLLVMPtr sym cond a def
+            Nothing -> useDefault "Unexpected value read from memory."
 
      return (a,st)
 
